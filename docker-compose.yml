@@ -1,0 +1,9 @@
+services:
+  redeemer:
+    build: .
+    volumes:
+      - ./players.txt:/app/players.txt:ro
+      - ./redeemer.db:/app/redeemer.db
+    environment:
+      POLL_INTERVAL: 5m
+    restart: unless-stopped
