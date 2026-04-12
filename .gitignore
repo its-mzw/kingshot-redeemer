@@ -1,5 +1,5 @@
 # Binaries
-redeemer
+ks-redeemer
 *.exe
 
 # Data files (contain personal player IDs and redemption history)

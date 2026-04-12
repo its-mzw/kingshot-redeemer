@@ -34,8 +34,8 @@ docker compose logs -f
 **Without Docker:**
 
 ```bash
-go build -o redeemer .
-PLAYER_FILE=./players.txt ./redeemer
+go build -o ks-redeemer .
+PLAYER_FILE=./players.txt ./ks-redeemer
 ```
 
 ## Configuration
