@@ -80,14 +80,22 @@ func processSummary(s store.Store, code string, summary *redeemer.Summary) {
 	for _, result := range summary.Results {
 		if result.Status != "success" {
 			log.Printf("scheduler: player %s code %q: %s", result.AccountID, code, result.Message)
-			if strings.Contains(strings.ToLower(result.Message), "expired") {
+			msg := strings.ToLower(result.Message)
+			var status string
+			switch {
+			case strings.Contains(msg, "expired"):
+				status = store.StatusExpired
+			case strings.Contains(msg, "already redeemed"):
+				status = store.StatusAlreadyRedeemed
+			}
+			if status != "" {
 				if err := s.SaveRedemption(store.Redemption{
 					PlayerID:   result.AccountID,
 					Code:       code,
 					RedeemedAt: summary.Timestamp,
-					Status:     store.StatusExpired,
+					Status:     status,
 				}); err != nil {
-					log.Printf("scheduler: save expired code player=%s code=%q: %v", result.AccountID, code, err)
+					log.Printf("scheduler: save player=%s code=%q: %v", result.AccountID, code, err)
 				}
 			}
 			continue

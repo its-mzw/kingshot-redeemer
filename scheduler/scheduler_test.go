@@ -212,6 +212,136 @@ func TestTick_expiredCodeNotRetried(t *testing.T) {
 	}
 }
 
+func TestTick_alreadyRedeemedSaved(t *testing.T) {
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+
+	codesSrv := codesServer([]map[string]any{
+		{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"},
+	})
+	defer codesSrv.Close()
+
+	redeemSrv := redeemServer([]map[string]any{
+		{"accountId": "p1", "status": "error", "message": "Gift code already redeemed."},
+	})
+	defer redeemSrv.Close()
+
+	s := newMockStore()
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1"}),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    redeemSrv.URL,
+		BatchSize:    1,
+	}
+
+	tick(context.Background(), cfg, s)
+
+	if len(s.saved) != 1 {
+		t.Fatalf("expected already-redeemed to be saved, got %d entries", len(s.saved))
+	}
+	if s.saved[0].Status != store.StatusAlreadyRedeemed {
+		t.Errorf("status: got %q, want %q", s.saved[0].Status, store.StatusAlreadyRedeemed)
+	}
+}
+
+func TestTick_alreadyRedeemedNotRetried(t *testing.T) {
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+
+	codesSrv := codesServer([]map[string]any{
+		{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"},
+	})
+	defer codesSrv.Close()
+
+	redeemSrv := redeemServer(nil) // must not be called
+	defer redeemSrv.Close()
+
+	s := newMockStore()
+	s.redeemed["p1|CODE1"] = true
+
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1"}),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    redeemSrv.URL,
+		BatchSize:    1,
+	}
+
+	tick(context.Background(), cfg, s)
+
+	if len(s.saved) != 0 {
+		t.Errorf("expected no retry, got %d saves", len(s.saved))
+	}
+}
+
+func TestTick_unknownErrorNotSaved(t *testing.T) {
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+
+	codesSrv := codesServer([]map[string]any{
+		{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"},
+	})
+	defer codesSrv.Close()
+
+	redeemSrv := redeemServer([]map[string]any{
+		{"accountId": "p1", "status": "error", "message": "Internal server error."},
+	})
+	defer redeemSrv.Close()
+
+	s := newMockStore()
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1"}),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    redeemSrv.URL,
+		BatchSize:    1,
+	}
+
+	tick(context.Background(), cfg, s)
+
+	if len(s.saved) != 0 {
+		t.Errorf("unknown error should not be saved (allow retry), got %d saves", len(s.saved))
+	}
+}
+
+func TestTick_expiredStatusSaved(t *testing.T) {
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+
+	codesSrv := codesServer([]map[string]any{
+		{"id": 1, "code": "KS0408", "createdAt": "2025-01-01"},
+	})
+	defer codesSrv.Close()
+
+	redeemSrv := redeemServer([]map[string]any{
+		{"accountId": "p1", "status": "error", "message": "Gift code expired."},
+	})
+	defer redeemSrv.Close()
+
+	s := newMockStore()
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1"}),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    redeemSrv.URL,
+		BatchSize:    1,
+	}
+
+	tick(context.Background(), cfg, s)
+
+	if len(s.saved) != 1 {
+		t.Fatalf("expected expired code to be saved, got %d entries", len(s.saved))
+	}
+	if s.saved[0].Status != store.StatusExpired {
+		t.Errorf("status: got %q, want %q", s.saved[0].Status, store.StatusExpired)
+	}
+}
+
 func TestFilterUnredeemed(t *testing.T) {
 	s := newMockStore()
 	s.redeemed["p1|CODE1"] = true

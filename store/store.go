@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	StatusSuccess = "success"
-	StatusExpired = "expired"
+	StatusSuccess        = "success"
+	StatusExpired        = "expired"
+	StatusAlreadyRedeemed = "already_redeemed"
 )
 
 // Store tracks redeemed codes per player.
