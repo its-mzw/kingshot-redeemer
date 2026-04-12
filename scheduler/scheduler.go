@@ -100,6 +100,7 @@ func processSummary(s store.Store, code string, summary *redeemer.Summary) {
 			}
 			continue
 		}
+		log.Printf("scheduler: player %s code %q: %s", result.AccountID, code, result.Message)
 		r := store.Redemption{
 			PlayerID:   result.AccountID,
 			Code:       code,
