@@ -1,14 +1,17 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"kingshot-redeemer/config"
 	"kingshot-redeemer/store"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -69,6 +72,47 @@ func redeemServer(results []map[string]any) *httptest.Server {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, res := range results {
 			data, _ := json.Marshal(res)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+}
+
+// captureLog redirects the global logger to a buffer for the duration of the test.
+// Not t.Parallel()-safe — tests using this must run sequentially.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return buf
+}
+
+// countLines counts lines in s that contain substr.
+func countLines(s, substr string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+// echoRedeemServer returns a server that reads accountIds from the request body
+// and streams one SSE result per ID with the given status and message.
+func echoRedeemServer(status, message string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AccountIDs []string `json:"accountIds"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, id := range body.AccountIDs {
+			result := map[string]any{"accountId": id, "status": status, "message": message}
+			if status == "success" {
+				result["playerInfo"] = map[string]any{"nickname": id, "kingdom": 1}
+			}
+			data, _ := json.Marshal(result)
 			fmt.Fprintf(w, "data: %s\n\n", data)
 		}
 	}))
@@ -415,6 +459,147 @@ func TestTick_parallelBatches(t *testing.T) {
 	maxExpected := 2 * batchDelay
 	if elapsed > maxExpected {
 		t.Errorf("elapsed %v suggests sequential execution (want < %v for parallel)", elapsed, maxExpected)
+	}
+}
+
+func TestLogging_cleanRun(t *testing.T) {
+	buf := captureLog(t)
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+	redeemSrv := echoRedeemServer("success", "OK")
+	defer redeemSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile: playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
+		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
+		BatchSize: 3, Workers: 3,
+	}
+	tick(context.Background(), cfg, newMockStore())
+	out := buf.String()
+
+	if countLines(out, `redeeming "CODE1" for 9 players (3 batches, 3 workers)`) != 1 {
+		t.Errorf("missing start line; got:\n%s", out)
+	}
+	if countLines(out, "picking up 3 ids") != 3 {
+		t.Errorf("want 3 pickup lines, got %d; output:\n%s", countLines(out, "picking up"), out)
+	}
+	if countLines(out, "workers busy") != 3 {
+		t.Errorf("pickup lines missing 'workers busy'; got:\n%s", out)
+	}
+	if countLines(out, `"CODE1" done — 9 succeeded, 0 failed`) != 1 {
+		t.Errorf("missing done line; got:\n%s", out)
+	}
+	if countLines(out, "player p") != 0 {
+		t.Errorf("unexpected per-player log lines; got:\n%s", out)
+	}
+}
+
+func TestLogging_expiredCode(t *testing.T) {
+	buf := captureLog(t)
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+	redeemSrv := echoRedeemServer("error", "Gift code expired.")
+	defer redeemSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile: playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
+		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
+		BatchSize: 3, Workers: 3,
+	}
+	tick(context.Background(), cfg, newMockStore())
+	out := buf.String()
+
+	if countLines(out, "picking up") != 3 {
+		t.Errorf("want 3 pickup lines; got:\n%s", out)
+	}
+	if countLines(out, `"CODE1" done — 0 succeeded, 9 failed (9 expired)`) != 1 {
+		t.Errorf("missing done line with expired count; got:\n%s", out)
+	}
+	if countLines(out, "player p") != 0 {
+		t.Errorf("expired should not produce per-player logs; got:\n%s", out)
+	}
+}
+
+func TestLogging_unknownError(t *testing.T) {
+	buf := captureLog(t)
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+	redeemSrv := echoRedeemServer("error", "Internal server error.")
+	defer redeemSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile: playerFile(t, []string{"p1"}),
+		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
+		BatchSize: 1, Workers: 1,
+	}
+	tick(context.Background(), cfg, newMockStore())
+	out := buf.String()
+
+	if countLines(out, `player p1 "CODE1": Internal server error.`) != 1 {
+		t.Errorf("want per-player unknown error line; got:\n%s", out)
+	}
+	if countLines(out, "1 unknown") != 1 {
+		t.Errorf("want done line with '1 unknown'; got:\n%s", out)
+	}
+}
+
+func TestLogging_mixedFailures(t *testing.T) {
+	buf := captureLog(t)
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+
+	// Each request gets a different result based on call order.
+	var mu sync.Mutex
+	responses := []map[string]any{
+		{"status": "error", "message": "Gift code expired."},
+		{"status": "error", "message": "Gift code already redeemed."},
+		{"status": "success", "message": "OK"},
+	}
+	idx := 0
+	mixedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ AccountIDs []string `json:"accountIds"` }
+		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, id := range body.AccountIDs {
+			mu.Lock()
+			res := responses[idx%len(responses)]
+			idx++
+			mu.Unlock()
+			entry := map[string]any{"accountId": id, "status": res["status"], "message": res["message"]}
+			if res["status"] == "success" {
+				entry["playerInfo"] = map[string]any{"nickname": id, "kingdom": 1}
+			}
+			data, _ := json.Marshal(entry)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer mixedSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile: playerFile(t, []string{"p1", "p2", "p3"}),
+		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: mixedSrv.URL,
+		BatchSize: 1, Workers: 1, // sequential so response order is deterministic
+	}
+	tick(context.Background(), cfg, newMockStore())
+	out := buf.String()
+
+	if countLines(out, `done — 1 succeeded, 2 failed (1 expired, 1 already_redeemed)`) != 1 {
+		t.Errorf("want done line with breakdown; got:\n%s", out)
+	}
+	if countLines(out, "player p") != 0 {
+		t.Errorf("expired/already_redeemed should not produce per-player logs; got:\n%s", out)
 	}
 }
 
