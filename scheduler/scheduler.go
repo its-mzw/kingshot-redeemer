@@ -8,6 +8,7 @@ import (
 	"kingshot-redeemer/store"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -64,15 +65,29 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 		}
 
 		log.Printf("scheduler: redeeming %q for %d players", code.Code, len(remaining))
-		for _, batch := range chunk(remaining, cfg.BatchSize) {
-			summary, err := redeemer.Redeem(ctx, code.Code, batch, cfg.RedeemURL)
-			if err != nil {
-				log.Printf("scheduler: redeem %q: %v", code.Code, err)
-				continue
-			}
-			log.Printf("scheduler: code %q batch=%d — succeeded=%d failed=%d", code.Code, len(batch), summary.Succeeded, summary.Failed)
-			processSummary(s, code.Code, summary)
+		var wg sync.WaitGroup
+		workers := cfg.Workers
+		if workers <= 0 {
+			workers = 1
 		}
+		sem := make(chan struct{}, workers)
+		for _, batch := range chunk(remaining, cfg.BatchSize) {
+			batch := batch
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				summary, err := redeemer.Redeem(ctx, code.Code, batch, cfg.RedeemURL)
+				if err != nil {
+					log.Printf("scheduler: redeem %q: %v", code.Code, err)
+					return
+				}
+				log.Printf("scheduler: code %q batch=%d — succeeded=%d failed=%d", code.Code, len(batch), summary.Succeeded, summary.Failed)
+				processSummary(s, code.Code, summary)
+			}()
+		}
+		wg.Wait()
 	}
 }
 

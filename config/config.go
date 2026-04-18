@@ -16,6 +16,8 @@ const (
 	defaultInterval  = 15 * time.Minute
 	defaultBatchSize = 3
 	maxBatchSize     = 100
+	defaultWorkers   = 5
+	maxWorkers       = 20
 )
 
 func defaultPaths() (dbPath, playerFile string) {
@@ -34,6 +36,7 @@ type Config struct {
 	HealthURL    string
 	DBPath       string
 	BatchSize    int
+	Workers      int
 }
 
 func Load() Config {
@@ -66,6 +69,13 @@ func Load() Config {
 		}
 	}
 
+	workers := defaultWorkers
+	if v := os.Getenv("WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxWorkers {
+			workers = n
+		}
+	}
+
 	defaultDB, defaultPlayerFile := defaultPaths()
 
 	dbPath := defaultDB
@@ -86,6 +96,7 @@ func Load() Config {
 		HealthURL:    healthURL,
 		DBPath:       dbPath,
 		BatchSize:    batchSize,
+		Workers:      workers,
 	}
 }
 

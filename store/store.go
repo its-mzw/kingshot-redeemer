@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,9 +11,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+//go:embed migrations/*.sql
+var migrations embed.FS
+
 const (
-	StatusSuccess        = "success"
-	StatusExpired        = "expired"
+	StatusSuccess         = "success"
+	StatusExpired         = "expired"
 	StatusAlreadyRedeemed = "already_redeemed"
 )
 
@@ -65,43 +69,26 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 
-	if version < 1 {
-		if err := migrate1(db); err != nil {
-			return err
-		}
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		return fmt.Errorf("read migrations: %w", err)
 	}
-	if version < 2 {
-		if err := migrate2(db); err != nil {
-			return err
+
+	for i, entry := range entries {
+		migrationVersion := i + 1
+		if version >= migrationVersion {
+			continue
+		}
+		sql, err := migrations.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
+		}
+		if _, err := db.Exec(string(sql)); err != nil {
+			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
 	}
 
 	return nil
-}
-
-// migration 1: initial schema
-func migrate1(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS redemptions (
-			player_id   TEXT NOT NULL,
-			code        TEXT NOT NULL,
-			redeemed_at DATETIME NOT NULL,
-			nickname    TEXT NOT NULL DEFAULT '',
-			kingdom     INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (player_id, code)
-		);
-		PRAGMA user_version = 1;
-	`)
-	return err
-}
-
-// migration 2: add status column
-func migrate2(db *sql.DB) error {
-	_, err := db.Exec(`
-		ALTER TABLE redemptions ADD COLUMN status TEXT NOT NULL DEFAULT 'success';
-		PRAGMA user_version = 2;
-	`)
-	return err
 }
 
 func (s *sqliteStore) IsRedeemed(playerID, code string) (bool, error) {

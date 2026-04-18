@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
 
-// mockStore is an in-memory store for testing.
+// mockStore is a thread-safe in-memory store for testing.
 type mockStore struct {
+	mu       sync.Mutex
 	redeemed map[string]bool
 	saved    []store.Redemption
 }
@@ -24,10 +26,14 @@ func newMockStore() *mockStore {
 }
 
 func (m *mockStore) IsRedeemed(playerID, code string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.redeemed[playerID+"|"+code], nil
 }
 
 func (m *mockStore) SaveRedemption(r store.Redemption) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.redeemed[r.PlayerID+"|"+r.Code] = true
 	m.saved = append(m.saved, r)
 	return nil
@@ -339,6 +345,76 @@ func TestTick_expiredStatusSaved(t *testing.T) {
 	}
 	if s.saved[0].Status != store.StatusExpired {
 		t.Errorf("status: got %q, want %q", s.saved[0].Status, store.StatusExpired)
+	}
+}
+
+func TestTick_parallelBatches(t *testing.T) {
+	const batchDelay = 80 * time.Millisecond
+	const numPlayers = 9
+	const batchSize = 3 // 3 batches total
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+
+	codesSrv := codesServer([]map[string]any{
+		{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"},
+	})
+	defer codesSrv.Close()
+
+	// Server parses accountIds from request body, returns a success result per ID.
+	// Sleeps batchDelay to make sequential vs parallel timing distinguishable.
+	slowRedeemSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			AccountIDs []string `json:"accountIds"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		time.Sleep(batchDelay)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, id := range body.AccountIDs {
+			data, _ := json.Marshal(map[string]any{
+				"accountId": id,
+				"status":    "success",
+				"message":   "OK",
+				"playerInfo": map[string]any{"nickname": id, "kingdom": 1},
+			})
+			fmt.Fprintf(w, "data: %s\n\n", data)
+		}
+	}))
+	defer slowRedeemSrv.Close()
+
+	players := make([]string, numPlayers)
+	for i := range players {
+		players[i] = fmt.Sprintf("p%d", i+1)
+	}
+
+	s := newMockStore()
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, players),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    slowRedeemSrv.URL,
+		BatchSize:    batchSize,
+		Workers:      3,
+	}
+
+	start := time.Now()
+	tick(context.Background(), cfg, s)
+	elapsed := time.Since(start)
+
+	s.mu.Lock()
+	savedCount := len(s.saved)
+	s.mu.Unlock()
+
+	if savedCount != numPlayers {
+		t.Errorf("saved: got %d, want %d", savedCount, numPlayers)
+	}
+
+	// Sequential would take 3 * batchDelay. Parallel should be ~1 * batchDelay.
+	// Allow generous 2x threshold to avoid flakiness.
+	maxExpected := 2 * batchDelay
+	if elapsed > maxExpected {
+		t.Errorf("elapsed %v suggests sequential execution (want < %v for parallel)", elapsed, maxExpected)
 	}
 }
 

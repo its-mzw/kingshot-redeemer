@@ -46,8 +46,9 @@ All configuration is via environment variables. Set them in `docker-compose.yml`
 | --------------- | ------------------------------------------------- | ----------------------------------------- |
 | `PLAYER_FILE`   | `./players.txt`                                   | Path to player IDs file (one ID per line) |
 | `DB_PATH`       | `./redeemer.db`                                   | SQLite database path (auto-created)       |
-| `POLL_INTERVAL` | `15m`                                             | Poll interval, e.g. `30s`, `10m`, `1h`    |
-| `BATCH_SIZE`    | `3`                                               | Players per redeem request (max 3)        |
+| `POLL_INTERVAL` | `15m`                                             | Poll interval, e.g. `30s`, `10m`, `1h`   |
+| `BATCH_SIZE`    | `3`                                               | Players per redeem request (max 100)      |
+| `WORKERS`       | `5`                                               | Concurrent batch requests (max 20)        |
 | `CODES_URL`     | `https://kingshot.net/api/gift-codes`             | Gift codes API endpoint                   |
 | `REDEEM_URL`    | `https://kingshot.net/api/gift-codes/bulk-redeem` | Bulk redeem API endpoint                  |
 | `HEALTH_URL`    | `https://kingshot.net/api/health`                 | Health check endpoint                     |
@@ -89,6 +90,7 @@ go test ./...
 ├── redeemer/             # Bulk redeem requests and SSE response parsing
 ├── scheduler/            # Poll loop and orchestration
 └── store/                # SQLite persistence
+    └── migrations/       # SQL migration files (embedded in binary)
 ```
 
 ## Disclaimer
