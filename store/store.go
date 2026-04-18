@@ -54,6 +54,7 @@ func New(path string) (Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 
 	if err := migrate(db); err != nil {
 		db.Close()
