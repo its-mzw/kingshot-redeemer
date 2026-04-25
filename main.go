@@ -14,7 +14,7 @@ import (
 func main() {
 	cfg := config.Load()
 
-	log.Printf("starting redeemer (interval=%s, db=%s, players=%s)", cfg.PollInterval, cfg.DBPath, cfg.PlayerFile)
+	log.Printf("starting redeemer (interval=%s, workers=%d, db=%s, players=%s)", cfg.PollInterval, cfg.Workers, cfg.DBPath, cfg.PlayerFile)
 
 	s, err := store.New(cfg.DBPath)
 	if err != nil {
