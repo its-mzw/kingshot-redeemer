@@ -4,8 +4,11 @@ ks-redeemer
 
 # Data files (contain personal player IDs and redemption history)
 players.txt
-players*.txt
+*players*.txt
 *.db
+*.script
+skipping_codes.txt
+*skipping_codes*.txt
 
 # Build output
 /dist/

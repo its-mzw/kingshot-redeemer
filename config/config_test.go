@@ -36,7 +36,8 @@ func TestLoad_envOverride(t *testing.T) {
 	os.Setenv("CODES_URL", "http://custom/codes")
 	os.Setenv("REDEEM_URL", "http://custom/redeem")
 	os.Setenv("DB_PATH", "/tmp/test.db")
-	os.Setenv("PLAYER_FILE", "/tmp/players.json")
+	os.Setenv("PLAYER_FILE", "/tmp/players.txt")
+	os.Setenv("SKIPPING_FILE", "/tmp/skipping_codes.txt")
 	t.Cleanup(os.Clearenv)
 
 	cfg := Load()
@@ -53,8 +54,11 @@ func TestLoad_envOverride(t *testing.T) {
 	if cfg.DBPath != "/tmp/test.db" {
 		t.Errorf("db path: got %q", cfg.DBPath)
 	}
-	if cfg.PlayerFile != "/tmp/players.json" {
+	if cfg.PlayerFile != "/tmp/players.txt" {
 		t.Errorf("player file: got %q", cfg.PlayerFile)
+	}
+	if cfg.SkippingFile != "/tmp/skipping_codes.txt" {
+		t.Errorf("skipping file: got %q", cfg.SkippingFile)
 	}
 }
 

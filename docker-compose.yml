@@ -3,8 +3,10 @@ services:
     build: .
     volumes:
       - ./players.txt:/players.txt:ro
+      - ./skipping_codes.txt:/skipping_codes.txt:ro
       - ./redeemer.db:/redeemer.db
     environment:
       PLAYER_FILE: /players.txt
+      SKIPPING_CODES_FILE: /skipping_codes.txt
       DB_PATH: /redeemer.db
     restart: unless-stopped

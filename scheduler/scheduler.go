@@ -2,11 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"kingshot-redeemer/config"
 	"kingshot-redeemer/poller"
 	"kingshot-redeemer/redeemer"
 	"kingshot-redeemer/store"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -35,12 +35,19 @@ func Run(ctx context.Context, cfg config.Config, s store.Store) {
 
 func tick(ctx context.Context, cfg config.Config, s store.Store) {
 	playerIDs, err := config.LoadPlayerIDs(cfg.PlayerFile)
+
 	if err != nil {
 		log.Printf("scheduler: load players: %v", err)
 		return
 	}
 	if len(playerIDs) == 0 {
 		log.Println("scheduler: no player IDs configured")
+		return
+	}
+
+	skippingCodes, err := config.LoadSkippedCodes(cfg.SkippingFile)
+	if err != nil {
+		log.Printf("scheduler: load skipping codes: %v", err)
 		return
 	}
 
@@ -60,6 +67,11 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 	}
 
 	for _, code := range codes {
+		if contains(skippingCodes, code.Code) {
+			log.Printf("scheduler: code %q skipped", code.Code)
+			continue
+		}
+
 		remaining := filterUnredeemed(s, playerIDs, code.Code)
 		if len(remaining) == 0 {
 			log.Printf("scheduler: code %q already redeemed by all players", code.Code)
@@ -206,4 +218,13 @@ func filterUnredeemed(s store.Store, playerIDs []string, code string) []string {
 		}
 	}
 	return remaining
+}
+
+func contains(skippingCodes []string, code string) bool {
+	for _, c := range skippingCodes {
+		if c == code {
+			return true
+		}
+	}
+	return false
 }

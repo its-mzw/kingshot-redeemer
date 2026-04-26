@@ -20,10 +20,10 @@ const (
 	maxWorkers       = 20
 )
 
-func defaultPaths() (dbPath, playerFile string) {
+func defaultPaths() (dbPath, playerFile string, skippingFile string) {
 	dir, err := os.Getwd()
 	if err != nil {
-		return "redeemer.db", "players.txt"
+		return "redeemer.db", "players.txt", "skipping_codes.txt"
 	}
 
 	return filepath.Join(dir, "redeemer.db"), filepath.Join(dir, "players.txt"), filepath.Join(dir, "skipping_codes.txt")
@@ -90,8 +90,14 @@ func Load() Config {
 		playerFile = v
 	}
 
+	skippingFile := defaultSkippingFile
+	if v := os.Getenv("SKIPPING_FILE"); v != "" {
+		skippingFile = v
+	}
+
 	return Config{
 		PlayerFile:   playerFile,
+		SkippingFile: skippingFile,
 		PollInterval: interval,
 		CodesURL:     codesURL,
 		RedeemURL:    redeemURL,
@@ -117,4 +123,20 @@ func LoadPlayerIDs(path string) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+func LoadSkippedCodes(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read skipped codes file: %w", err)
+	}
+
+	var codes []string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			codes = append(codes, line)
+		}
+	}
+	return codes, nil
 }
