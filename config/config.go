@@ -25,11 +25,13 @@ func defaultPaths() (dbPath, playerFile string) {
 	if err != nil {
 		return "redeemer.db", "players.txt"
 	}
-	return filepath.Join(dir, "redeemer.db"), filepath.Join(dir, "players.txt")
+
+	return filepath.Join(dir, "redeemer.db"), filepath.Join(dir, "players.txt"), filepath.Join(dir, "skipping_codes.txt")
 }
 
 type Config struct {
 	PlayerFile   string
+	SkippingFile string
 	PollInterval time.Duration
 	CodesURL     string
 	RedeemURL    string
@@ -76,7 +78,7 @@ func Load() Config {
 		}
 	}
 
-	defaultDB, defaultPlayerFile := defaultPaths()
+	defaultDB, defaultPlayerFile, defaultSkippingFile := defaultPaths()
 
 	dbPath := defaultDB
 	if v := os.Getenv("DB_PATH"); v != "" {
