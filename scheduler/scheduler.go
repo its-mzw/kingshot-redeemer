@@ -35,7 +35,6 @@ func Run(ctx context.Context, cfg config.Config, s store.Store) {
 
 func tick(ctx context.Context, cfg config.Config, s store.Store) {
 	playerIDs, err := config.LoadPlayerIDs(cfg.PlayerFile)
-
 	if err != nil {
 		log.Printf("scheduler: load players: %v", err)
 		return
@@ -78,16 +77,13 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 			continue
 		}
 
-		batches := chunk(remaining, cfg.BatchSize)
 		workers := cfg.Workers
 		if workers <= 0 {
 			workers = 1
 		}
-		log.Printf("scheduler: redeeming %q for %d players (%d batches, %d workers)",
-			code.Code, len(remaining), len(batches), workers)
+		log.Printf("scheduler: redeeming %q for %d players (%d workers)",
+			code.Code, len(remaining), workers)
 
-		total := int64(len(remaining))
-		var dispatched, activeWorkers atomic.Int64
 		var res struct {
 			sync.Mutex
 			succeeded, expired, alreadyRedeemed, unknown int
@@ -95,35 +91,35 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, workers)
-		for _, batch := range batches {
-			batch := batch
+		dispatched := atomic.Int64{}
+		total := int64(len(remaining))
+
+		for _, playerID := range remaining {
+			playerID := playerID
 			wg.Add(1)
 			sem <- struct{}{}
 			go func() {
 				defer wg.Done()
-				defer func() {
-					activeWorkers.Add(-1)
-					<-sem
-				}()
+				defer func() { <-sem }()
 
-				active := activeWorkers.Add(1)
-				d := dispatched.Add(int64(len(batch)))
-				log.Printf("scheduler: %q picking up %d ids — %d/%d left, %d/%d workers busy",
-					code.Code, len(batch), total-d, total, active, workers)
+				dispatched.Add(1)
+				ts := time.Now().UTC()
 
-				summary, err := redeemer.Redeem(ctx, code.Code, batch, cfg.RedeemURL)
+				result, err := redeemer.Redeem(ctx, code.Code, playerID, cfg.RedeemURL, cfg.SessionToken)
 				if err != nil {
-					log.Printf("scheduler: redeem %q: %v", code.Code, err)
+					log.Printf("scheduler: redeem player=%s %q: %v", playerID, code.Code, err)
 					return
 				}
 
-				succ, exp, ar, unk := processSummary(s, code.Code, summary)
+				succ, exp, ar, unk := processResult(s, code.Code, result, ts)
 				res.Lock()
 				res.succeeded += succ
 				res.expired += exp
 				res.alreadyRedeemed += ar
 				res.unknown += unk
 				res.Unlock()
+
+				_ = total - dispatched.Load() // suppress unused warning
 			}()
 		}
 		wg.Wait()
@@ -134,47 +130,41 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 	}
 }
 
-func processSummary(s store.Store, code string, summary *redeemer.Summary) (succeeded, expired, alreadyRedeemed, unknown int) {
-	for _, result := range summary.Results {
-		if result.Status != "success" {
-			msg := strings.ToLower(result.Message)
-			var status string
-			switch {
-			case strings.Contains(msg, "expired"):
-				status = store.StatusExpired
-				expired++
-			case strings.Contains(msg, "already redeemed"):
-				status = store.StatusAlreadyRedeemed
-				alreadyRedeemed++
-			default:
-				unknown++
-				log.Printf("scheduler: player %s %q: %s", result.AccountID, code, result.Message)
-			}
-			if status != "" {
-				if err := s.SaveRedemption(store.Redemption{
-					PlayerID:   result.AccountID,
-					Code:       code,
-					RedeemedAt: summary.Timestamp,
-					Status:     status,
-				}); err != nil {
-					log.Printf("scheduler: save player=%s code=%q: %v", result.AccountID, code, err)
-				}
-			}
-			continue
-		}
+func processResult(s store.Store, code string, result *redeemer.Result, ts time.Time) (succeeded, expired, alreadyRedeemed, unknown int) {
+	if result.Status == "success" {
 		succeeded++
-		r := store.Redemption{
-			PlayerID:   result.AccountID,
+		if err := s.SaveRedemption(store.Redemption{
+			PlayerID:   result.PlayerID,
 			Code:       code,
-			RedeemedAt: summary.Timestamp,
+			RedeemedAt: ts,
 			Status:     store.StatusSuccess,
+		}); err != nil {
+			log.Printf("scheduler: save redemption player=%s code=%q: %v", result.PlayerID, code, err)
 		}
-		if result.PlayerInfo != nil {
-			r.Nickname = result.PlayerInfo.Nickname
-			r.Kingdom = result.PlayerInfo.Kingdom
-		}
-		if err := s.SaveRedemption(r); err != nil {
-			log.Printf("scheduler: save redemption player=%s code=%q: %v", result.AccountID, code, err)
+		return
+	}
+
+	msg := strings.ToLower(result.Message)
+	var status string
+	switch {
+	case strings.Contains(msg, "expired"):
+		status = store.StatusExpired
+		expired++
+	case strings.Contains(msg, "already redeemed"):
+		status = store.StatusAlreadyRedeemed
+		alreadyRedeemed++
+	default:
+		unknown++
+		log.Printf("scheduler: player %s %q: %s", result.PlayerID, code, result.Message)
+	}
+	if status != "" {
+		if err := s.SaveRedemption(store.Redemption{
+			PlayerID:   result.PlayerID,
+			Code:       code,
+			RedeemedAt: ts,
+			Status:     status,
+		}); err != nil {
+			log.Printf("scheduler: save player=%s code=%q: %v", result.PlayerID, code, err)
 		}
 	}
 	return
@@ -195,14 +185,6 @@ func failureSuffix(expired, alreadyRedeemed, unknown int) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
-}
-
-func chunk(ids []string, size int) [][]string {
-	var batches [][]string
-	for size < len(ids) {
-		ids, batches = ids[size:], append(batches, ids[:size])
-	}
-	return append(batches, ids)
 }
 
 func filterUnredeemed(s store.Store, playerIDs []string, code string) []string {

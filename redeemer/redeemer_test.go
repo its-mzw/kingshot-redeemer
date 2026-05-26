@@ -2,113 +2,110 @@ package redeemer
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func sseServer(events []string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, e := range events {
-			fmt.Fprintf(w, "data: %s\n\n", e)
-		}
-	}))
+func successResponse() map[string]any {
+	return map[string]any{
+		"status":  "success",
+		"data":    map[string]any{"redemption": "SUCCESS", "autoAdded": false, "accountUpdated": false},
+		"message": "Gift code redeemed successfully. Please check your mail in the game.",
+	}
 }
 
 func TestRedeem_success(t *testing.T) {
-	srv := sseServer([]string{
-		`{"accountId":"p1","status":"success","message":"OK","playerInfo":{"nickname":"Hero","kingdom":1}}`,
-		`{"accountId":"p2","status":"success","message":"OK","playerInfo":{"nickname":"Villain","kingdom":2}}`,
-	})
-	defer srv.Close()
-
-	summary, err := Redeem(context.Background(), "CODE1", []string{"p1", "p2"}, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if summary.Succeeded != 2 {
-		t.Errorf("succeeded: got %d, want 2", summary.Succeeded)
-	}
-	if summary.Failed != 0 {
-		t.Errorf("failed: got %d, want 0", summary.Failed)
-	}
-	if summary.Total != 2 {
-		t.Errorf("total: got %d, want 2", summary.Total)
-	}
-	if summary.GiftCode != "CODE1" {
-		t.Errorf("gift code: got %q", summary.GiftCode)
-	}
-}
-
-func TestRedeem_partialFailure(t *testing.T) {
-	srv := sseServer([]string{
-		`{"accountId":"p1","status":"success","message":"OK"}`,
-		`{"accountId":"p2","status":"failed","message":"already redeemed"}`,
-	})
-	defer srv.Close()
-
-	summary, err := Redeem(context.Background(), "CODE1", []string{"p1", "p2"}, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if summary.Succeeded != 1 {
-		t.Errorf("succeeded: got %d, want 1", summary.Succeeded)
-	}
-	if summary.Failed != 1 {
-		t.Errorf("failed: got %d, want 1", summary.Failed)
-	}
-}
-
-func TestRedeem_skipsProcessingEvents(t *testing.T) {
-	srv := sseServer([]string{
-		`{"accountId":"p1","status":"processing","message":"working..."}`,
-		`{"accountId":"p1","status":"success","message":"OK"}`,
-	})
-	defer srv.Close()
-
-	summary, err := Redeem(context.Background(), "CODE1", []string{"p1"}, srv.URL)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(summary.Results) != 1 {
-		t.Errorf("results: got %d, want 1", len(summary.Results))
-	}
-	if summary.Results[0].Status != "success" {
-		t.Errorf("status: got %q", summary.Results[0].Status)
-	}
-}
-
-func TestRedeem_multilineJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: {\n  \"accountId\": \"p1\",\n  \"status\": \"success\",\n  \"message\": \"OK\"\n}\n\n")
-		fmt.Fprintf(w, "data: {\n  \"accountId\": \"p2\",\n  \"status\": \"error\",\n  \"message\": \"Gift code expired.\"\n}\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(successResponse())
 	}))
 	defer srv.Close()
 
-	summary, err := Redeem(context.Background(), "CODE1", []string{"p1", "p2"}, srv.URL)
+	result, err := Redeem(context.Background(), "KS0524", "12345", srv.URL, "token123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(summary.Results) != 2 {
-		t.Errorf("results: got %d, want 2", len(summary.Results))
+	if result.Status != "success" {
+		t.Errorf("status: got %q, want %q", result.Status, "success")
 	}
-	if summary.Succeeded != 1 || summary.Failed != 1 {
-		t.Errorf("succeeded=%d failed=%d, want 1/1", summary.Succeeded, summary.Failed)
+	if result.PlayerID != "12345" {
+		t.Errorf("playerID: got %q, want %q", result.PlayerID, "12345")
 	}
 }
 
-func TestRedeem_serverError(t *testing.T) {
+func TestRedeem_sendsSessionCookie(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(successResponse())
+	}))
+	defer srv.Close()
+
+	_, err := Redeem(context.Background(), "CODE", "p1", srv.URL, "my-session-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(gotCookie, "my-session-token") {
+		t.Errorf("cookie: got %q, want to contain session token", gotCookie)
+	}
+}
+
+func TestRedeem_sendsCorrectBody(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(successResponse())
+	}))
+	defer srv.Close()
+
+	_, err := Redeem(context.Background(), "KS0524", "17976339", srv.URL, "token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotBody["giftCode"] != "KS0524" {
+		t.Errorf("giftCode: got %q, want %q", gotBody["giftCode"], "KS0524")
+	}
+	if gotBody["playerId"] != "17976339" {
+		t.Errorf("playerId: got %q, want %q", gotBody["playerId"], "17976339")
+	}
+	_, hasAccountIds := gotBody["accountIds"]
+	if hasAccountIds {
+		t.Error("body must not contain accountIds (old bulk field)")
+	}
+}
+
+func TestRedeem_500_returnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "error",
+			"data":    nil,
+			"message": "Request failed with status code 429",
+			"meta":    map[string]any{"code": "INTERNAL_ERROR"},
+		})
 	}))
 	defer srv.Close()
 
-	_, err := Redeem(context.Background(), "CODE1", []string{"p1"}, srv.URL)
+	_, err := Redeem(context.Background(), "CODE", "p1", srv.URL, "token")
 	if err == nil {
 		t.Error("expected error for 500 response")
+	}
+}
+
+func TestRedeem_405_returnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+
+	_, err := Redeem(context.Background(), "CODE", "p1", srv.URL, "token")
+	if err == nil {
+		t.Error("expected error for 405 response")
 	}
 }
 
@@ -116,7 +113,7 @@ func TestRedeem_contextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := Redeem(ctx, "CODE1", []string{"p1"}, "http://127.0.0.1:0")
+	_, err := Redeem(ctx, "CODE", "p1", "http://127.0.0.1:0", "token")
 	if err == nil {
 		t.Error("expected error for cancelled context")
 	}

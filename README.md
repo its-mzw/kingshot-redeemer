@@ -8,10 +8,10 @@ Self-hostable service that automatically redeems Kingshot gift codes for a list 
 
 1. On each poll interval, fetches active gift codes from the Kingshot API
 2. For each code, filters out players who already redeemed it
-3. Sends bulk redeem requests and processes the streaming SSE response
+3. Sends one redeem request per player (cookie-auth) and processes the JSON response
 4. Saves successful redemptions to SQLite
-5. Marks expired codes so they are never retried
-6. Failed (non-expired) redemptions are retried on the next tick
+5. Marks expired and already-redeemed codes so they are never retried
+6. Failed (unknown error) redemptions are retried on the next tick
 
 ## Quick start
 
@@ -21,13 +21,15 @@ Self-hostable service that automatically redeems Kingshot gift codes for a list 
 # 1. Create your player IDs file (one ID per line)
 printf '12345678\n87654321\n' > players.txt
 
-# 2. Create empty DB file (required for Docker volume mount)
-touch redeemer.db
+# 2. Create empty DB and skipping_codes files (required for Docker volume mounts)
+touch redeemer.db skipping_codes.txt
 
-# 3. Start the service
+# 3. Set your session token in docker-compose.yml (see Configuration below)
+
+# 4. Start the service
 docker compose up -d
 
-# 4. Follow logs
+# 5. Follow logs
 docker compose logs -f
 ```
 
@@ -35,23 +37,33 @@ docker compose logs -f
 
 ```bash
 go build -o ks-redeemer .
-PLAYER_FILE=./players.txt ./ks-redeemer
+SESSION_TOKEN=<your-session-token> PLAYER_FILE=./players.txt ./ks-redeemer
 ```
 
 ## Configuration
 
 All configuration is via environment variables. Set them in `docker-compose.yml` or export them before running the binary.
 
-| Variable        | Default                                           | Description                               |
-| --------------- | ------------------------------------------------- | ----------------------------------------- |
-| `PLAYER_FILE`   | `./players.txt`                                   | Path to player IDs file (one ID per line) |
-| `DB_PATH`       | `./redeemer.db`                                   | SQLite database path (auto-created)       |
-| `POLL_INTERVAL` | `15m`                                             | Poll interval, e.g. `30s`, `10m`, `1h`   |
-| `BATCH_SIZE`    | `3`                                               | Players per redeem request (max 100)      |
-| `WORKERS`       | `5`                                               | Concurrent batch requests (max 20)        |
-| `CODES_URL`     | `https://kingshot.net/api/gift-codes`             | Gift codes API endpoint                   |
-| `REDEEM_URL`    | `https://kingshot.net/api/gift-codes/bulk-redeem` | Bulk redeem API endpoint                  |
-| `HEALTH_URL`    | `https://kingshot.net/api/health`                 | Health check endpoint                     |
+| Variable        | Default                                      | Description                                                     |
+| --------------- | -------------------------------------------- | --------------------------------------------------------------- |
+| `SESSION_TOKEN` | *(required)*                                 | Value of `__Secure-next-auth.session-token` cookie from browser |
+| `PLAYER_FILE`   | `./players.txt`                              | Path to player IDs file (one ID per line)                       |
+| `SKIPPING_FILE` | `./skipping_codes.txt`                       | Path to codes to skip (one code per line)                       |
+| `DB_PATH`       | `./redeemer.db`                              | SQLite database path (auto-created)                             |
+| `POLL_INTERVAL` | `15m`                                        | Poll interval, e.g. `30s`, `10m`, `1h`                         |
+| `WORKERS`       | `5`                                          | Concurrent redeem requests per code (max 20)                    |
+| `CODES_URL`     | `https://kingshot.net/api/gift-codes`        | Gift codes API endpoint                                         |
+| `REDEEM_URL`    | `https://kingshot.net/api/gift-codes/redeem` | Redeem API endpoint                                             |
+| `HEALTH_URL`    | `https://kingshot.net/api/health`            | Health check endpoint                                           |
+
+### Getting your session token
+
+1. Log in to [kingshot.net](https://kingshot.net) in your browser
+2. Open DevTools → Application → Cookies
+3. Copy the value of `__Secure-next-auth.session-token`
+4. Set it as `SESSION_TOKEN` in your environment or `docker-compose.yml`
+
+The token is tied to your login session. If it expires, the service will log auth errors — re-login and update the token.
 
 ## Player ID file
 
@@ -87,7 +99,7 @@ go test ./...
 ├── main.go               # Entry point
 ├── config/               # Environment-based configuration
 ├── poller/               # API health checks and code fetching
-├── redeemer/             # Bulk redeem requests and SSE response parsing
+├── redeemer/             # Per-player redeem requests and JSON response parsing
 ├── scheduler/            # Poll loop and orchestration
 └── store/                # SQLite persistence
     └── migrations/       # SQL migration files (embedded in binary)

@@ -79,6 +79,23 @@ func TestLoad_workersEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoad_sessionTokenDefault(t *testing.T) {
+	os.Clearenv()
+	cfg := Load()
+	if cfg.SessionToken != "" {
+		t.Errorf("session token default: got %q, want empty", cfg.SessionToken)
+	}
+}
+
+func TestLoad_sessionTokenEnvOverride(t *testing.T) {
+	os.Setenv("SESSION_TOKEN", "abc123")
+	t.Cleanup(os.Clearenv)
+	cfg := Load()
+	if cfg.SessionToken != "abc123" {
+		t.Errorf("session token: got %q, want %q", cfg.SessionToken, "abc123")
+	}
+}
+
 func TestLoadPlayerIDs_plainText(t *testing.T) {
 	f, err := os.CreateTemp("", "players*.txt")
 	if err != nil {

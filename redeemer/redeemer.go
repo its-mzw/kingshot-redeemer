@@ -1,53 +1,32 @@
 package redeemer
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
-	"time"
 )
 
-type PlayerInfo struct {
-	Nickname     string `json:"nickname"`
-	Kingdom      int    `json:"kingdom"`
-	Level        int    `json:"level"`
-	LevelImage   any    `json:"levelImage"`
-	ProfilePhoto string `json:"profilePhoto"`
-}
-
 type Result struct {
-	AccountID  string      `json:"accountId"`
-	Status     string      `json:"status"`
-	Message    string      `json:"message"`
-	PlayerInfo *PlayerInfo `json:"playerInfo,omitempty"`
+	PlayerID string `json:"playerId"`
+	Status   string `json:"status"`
+	Message  string `json:"message"`
 }
 
-type Summary struct {
-	GiftCode  string    `json:"giftCode"`
-	Timestamp time.Time `json:"timestamp"`
-	Total     int       `json:"total"`
-	Succeeded int       `json:"succeeded"`
-	Failed    int       `json:"failed"`
-	Results   []Result  `json:"results"`
+type redeemResponse struct {
+	Status  string `json:"status"`
+	Data    *struct {
+		Redemption string `json:"redemption"`
+	} `json:"data"`
+	Message string `json:"message"`
 }
 
-type streamEvent struct {
-	Status     string      `json:"status"`
-	Message    string      `json:"message"`
-	AccountID  string      `json:"accountId"`
-	PlayerInfo *PlayerInfo `json:"playerInfo,omitempty"`
-}
-
-// Redeem sends a bulk redeem request for the given gift code and player IDs.
-// It streams the SSE response and returns a Summary of results.
-func Redeem(ctx context.Context, code string, playerIDs []string, redeemURL string) (*Summary, error) {
+// Redeem redeems a gift code for a single player using the cookie-auth endpoint.
+func Redeem(ctx context.Context, code, playerID, redeemURL, sessionToken string) (*Result, error) {
 	payload, err := json.Marshal(map[string]any{
-		"giftCode":   code,
-		"accountIds": playerIDs,
+		"giftCode": code,
+		"playerId": playerID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
@@ -58,6 +37,7 @@ func Redeem(ctx context.Context, code string, playerIDs []string, redeemURL stri
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+sessionToken)
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -66,63 +46,28 @@ func Redeem(ctx context.Context, code string, playerIDs []string, redeemURL stri
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status: %d", res.StatusCode)
-	}
-
-	var results []Result
-	scanner := bufio.NewScanner(res.Body)
-
-	var buf strings.Builder
-	flush := func() {
-		if buf.Len() == 0 {
-			return
+		var errResp redeemResponse
+		json.NewDecoder(res.Body).Decode(&errResp)
+		msg := errResp.Message
+		if msg == "" {
+			msg = fmt.Sprintf("unexpected status: %d", res.StatusCode)
 		}
-		var event streamEvent
-		if err := json.Unmarshal([]byte(buf.String()), &event); err == nil {
-			if event.AccountID != "" && event.Status != "processing" {
-				results = append(results, Result{
-					AccountID:  event.AccountID,
-					Status:     event.Status,
-					Message:    event.Message,
-					PlayerInfo: event.PlayerInfo,
-				})
-			}
-		}
-		buf.Reset()
+		return nil, fmt.Errorf("redeem failed: %s", msg)
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(line, "data: ") {
-			flush()
-			buf.WriteString(strings.TrimPrefix(line, "data: "))
-		} else if buf.Len() > 0 {
-			buf.WriteString(line)
-		}
-	}
-	flush()
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read stream: %w", err)
+	var resp redeemResponse
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	summary := &Summary{
-		GiftCode:  code,
-		Timestamp: time.Now().UTC(),
-		Total:     len(playerIDs),
-		Results:   results,
-	}
-	for _, r := range results {
-		if r.Status == "success" {
-			summary.Succeeded++
-		} else {
-			summary.Failed++
-		}
+	status := "error"
+	if resp.Data != nil && resp.Data.Redemption == "SUCCESS" {
+		status = "success"
 	}
 
-	return summary, nil
+	return &Result{
+		PlayerID: playerID,
+		Status:   status,
+		Message:  resp.Message,
+	}, nil
 }

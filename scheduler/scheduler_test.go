@@ -68,13 +68,19 @@ func codesServer(codes []map[string]any) *httptest.Server {
 	}))
 }
 
-func redeemServer(results []map[string]any) *httptest.Server {
+// jsonRedeemServer returns a per-player JSON response with the given status and message.
+func jsonRedeemServer(status, message string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, res := range results {
-			data, _ := json.Marshal(res)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+		w.Header().Set("Content-Type", "application/json")
+		var data any
+		if status == "success" {
+			data = map[string]any{"redemption": "SUCCESS", "autoAdded": false, "accountUpdated": false}
 		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  status,
+			"data":    data,
+			"message": message,
+		})
 	}))
 }
 
@@ -97,26 +103,6 @@ func countLines(s, substr string) int {
 		}
 	}
 	return n
-}
-
-// echoRedeemServer returns a server that reads accountIds from the request body
-// and streams one SSE result per ID with the given status and message.
-func echoRedeemServer(status, message string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			AccountIDs []string `json:"accountIds"`
-		}
-		json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, id := range body.AccountIDs {
-			result := map[string]any{"accountId": id, "status": status, "message": message}
-			if status == "success" {
-				result["playerInfo"] = map[string]any{"nickname": id, "kingdom": 1}
-			}
-			data, _ := json.Marshal(result)
-			fmt.Fprintf(w, "data: %s\n\n", data)
-		}
-	}))
 }
 
 func playerFile(t *testing.T, ids []string) string {
@@ -156,9 +142,7 @@ func TestTick_redeemsAndSaves(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer([]map[string]any{
-		{"accountId": "p1", "status": "success", "message": "OK", "playerInfo": map[string]any{"nickname": "Hero", "kingdom": 1}},
-	})
+	redeemSrv := jsonRedeemServer("success", "Gift code redeemed successfully.")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -169,7 +153,7 @@ func TestTick_redeemsAndSaves(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "test-token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -182,6 +166,41 @@ func TestTick_redeemsAndSaves(t *testing.T) {
 	}
 }
 
+func TestTick_sendsCookieOnRedeem(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "success",
+			"data":    map[string]any{"redemption": "SUCCESS"},
+			"message": "ok",
+		})
+	}))
+	defer srv.Close()
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1"}),
+		SkippingFile: skippingFile(t, nil),
+		PollInterval: time.Minute,
+		HealthURL:    healthSrv.URL,
+		CodesURL:     codesSrv.URL,
+		RedeemURL:    srv.URL,
+		SessionToken: "secret-session-token",
+	}
+
+	tick(context.Background(), cfg, newMockStore())
+
+	if !strings.Contains(gotCookie, "secret-session-token") {
+		t.Errorf("cookie: got %q, want to contain session token", gotCookie)
+	}
+}
+
 func TestTick_skipsAlreadyRedeemed(t *testing.T) {
 	healthSrv := healthServer()
 	defer healthSrv.Close()
@@ -191,7 +210,7 @@ func TestTick_skipsAlreadyRedeemed(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer(nil) // should not be called
+	redeemSrv := jsonRedeemServer("success", "ok") // must not be called
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -204,7 +223,7 @@ func TestTick_skipsAlreadyRedeemed(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -223,9 +242,7 @@ func TestTick_expiredCodeSaved(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer([]map[string]any{
-		{"accountId": "p1", "status": "error", "message": "Gift code expired."},
-	})
+	redeemSrv := jsonRedeemServer("error", "Gift code expired.")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -236,7 +253,7 @@ func TestTick_expiredCodeSaved(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -258,11 +275,11 @@ func TestTick_expiredCodeNotRetried(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer(nil) // must not be called
+	redeemSrv := jsonRedeemServer("success", "ok") // must not be called
 	defer redeemSrv.Close()
 
 	s := newMockStore()
-	s.redeemed["p1|KS0408"] = true // already saved from previous expired tick
+	s.redeemed["p1|KS0408"] = true
 
 	cfg := config.Config{
 		PlayerFile:   playerFile(t, []string{"p1"}),
@@ -271,7 +288,7 @@ func TestTick_expiredCodeNotRetried(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -290,9 +307,7 @@ func TestTick_alreadyRedeemedSaved(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer([]map[string]any{
-		{"accountId": "p1", "status": "error", "message": "Gift code already redeemed."},
-	})
+	redeemSrv := jsonRedeemServer("error", "Gift code already redeemed.")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -303,7 +318,7 @@ func TestTick_alreadyRedeemedSaved(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -325,7 +340,7 @@ func TestTick_alreadyRedeemedNotRetried(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer(nil) // must not be called
+	redeemSrv := jsonRedeemServer("success", "ok") // must not be called
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -338,7 +353,7 @@ func TestTick_alreadyRedeemedNotRetried(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -357,9 +372,7 @@ func TestTick_unknownErrorNotSaved(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer([]map[string]any{
-		{"accountId": "p1", "status": "error", "message": "Internal server error."},
-	})
+	redeemSrv := jsonRedeemServer("error", "Internal server error.")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -370,7 +383,7 @@ func TestTick_unknownErrorNotSaved(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -389,9 +402,7 @@ func TestTick_expiredStatusSaved(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := redeemServer([]map[string]any{
-		{"accountId": "p1", "status": "error", "message": "Gift code expired."},
-	})
+	redeemSrv := jsonRedeemServer("error", "Gift code expired.")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -402,7 +413,7 @@ func TestTick_expiredStatusSaved(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -415,10 +426,10 @@ func TestTick_expiredStatusSaved(t *testing.T) {
 	}
 }
 
-func TestTick_parallelBatches(t *testing.T) {
-	const batchDelay = 80 * time.Millisecond
+func TestTick_parallelPlayers(t *testing.T) {
+	const playerDelay = 80 * time.Millisecond
 	const numPlayers = 9
-	const batchSize = 3 // 3 batches total
+	const numWorkers = 3
 
 	healthSrv := healthServer()
 	defer healthSrv.Close()
@@ -428,26 +439,16 @@ func TestTick_parallelBatches(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	// Server parses accountIds from request body, returns a success result per ID.
-	// Sleeps batchDelay to make sequential vs parallel timing distinguishable.
-	slowRedeemSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			AccountIDs []string `json:"accountIds"`
-		}
-		json.NewDecoder(r.Body).Decode(&body)
-		time.Sleep(batchDelay)
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, id := range body.AccountIDs {
-			data, _ := json.Marshal(map[string]any{
-				"accountId": id,
-				"status":    "success",
-				"message":   "OK",
-				"playerInfo": map[string]any{"nickname": id, "kingdom": 1},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-		}
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(playerDelay)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "success",
+			"data":    map[string]any{"redemption": "SUCCESS"},
+			"message": "ok",
+		})
 	}))
-	defer slowRedeemSrv.Close()
+	defer slowSrv.Close()
 
 	players := make([]string, numPlayers)
 	for i := range players {
@@ -461,9 +462,9 @@ func TestTick_parallelBatches(t *testing.T) {
 		PollInterval: time.Minute,
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
-		RedeemURL:    slowRedeemSrv.URL,
-		BatchSize:    batchSize,
-		Workers:      3,
+		RedeemURL:    slowSrv.URL,
+		Workers:      numWorkers,
+		SessionToken: "token",
 	}
 
 	start := time.Now()
@@ -478,9 +479,9 @@ func TestTick_parallelBatches(t *testing.T) {
 		t.Errorf("saved: got %d, want %d", savedCount, numPlayers)
 	}
 
-	// Sequential would take 3 * batchDelay. Parallel should be ~1 * batchDelay.
-	// Allow generous 2x threshold to avoid flakiness.
-	maxExpected := 2 * batchDelay
+	// Sequential: 9 * playerDelay. Parallel with 3 workers: ceil(9/3) * playerDelay = 3 * playerDelay.
+	// Allow generous 5x to avoid flakiness.
+	maxExpected := 5 * playerDelay
 	if elapsed > maxExpected {
 		t.Errorf("elapsed %v suggests sequential execution (want < %v for parallel)", elapsed, maxExpected)
 	}
@@ -493,26 +494,20 @@ func TestLogging_cleanRun(t *testing.T) {
 	defer healthSrv.Close()
 	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
 	defer codesSrv.Close()
-	redeemSrv := echoRedeemServer("success", "OK")
+	redeemSrv := jsonRedeemServer("success", "Gift code redeemed successfully.")
 	defer redeemSrv.Close()
 
 	cfg := config.Config{
-		PlayerFile: playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
+		PlayerFile:   playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
 		SkippingFile: skippingFile(t, nil),
-		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
-		BatchSize: 3, Workers: 3,
+		HealthURL:    healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
+		Workers: 3, SessionToken: "token",
 	}
 	tick(context.Background(), cfg, newMockStore())
 	out := buf.String()
 
-	if countLines(out, `redeeming "CODE1" for 9 players (3 batches, 3 workers)`) != 1 {
+	if countLines(out, `redeeming "CODE1" for 9 players (3 workers)`) != 1 {
 		t.Errorf("missing start line; got:\n%s", out)
-	}
-	if countLines(out, "picking up 3 ids") != 3 {
-		t.Errorf("want 3 pickup lines, got %d; output:\n%s", countLines(out, "picking up"), out)
-	}
-	if countLines(out, "workers busy") != 3 {
-		t.Errorf("pickup lines missing 'workers busy'; got:\n%s", out)
 	}
 	if countLines(out, `"CODE1" done — 9 succeeded, 0 failed`) != 1 {
 		t.Errorf("missing done line; got:\n%s", out)
@@ -529,21 +524,18 @@ func TestLogging_expiredCode(t *testing.T) {
 	defer healthSrv.Close()
 	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
 	defer codesSrv.Close()
-	redeemSrv := echoRedeemServer("error", "Gift code expired.")
+	redeemSrv := jsonRedeemServer("error", "Gift code expired.")
 	defer redeemSrv.Close()
 
 	cfg := config.Config{
-		PlayerFile: playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
+		PlayerFile:   playerFile(t, []string{"p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"}),
 		SkippingFile: skippingFile(t, nil),
-		HealthURL:  healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
-		BatchSize: 3, Workers: 3,
+		HealthURL:    healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
+		Workers: 3, SessionToken: "token",
 	}
 	tick(context.Background(), cfg, newMockStore())
 	out := buf.String()
 
-	if countLines(out, "picking up") != 3 {
-		t.Errorf("want 3 pickup lines; got:\n%s", out)
-	}
 	if countLines(out, `"CODE1" done — 0 succeeded, 9 failed (9 expired)`) != 1 {
 		t.Errorf("missing done line with expired count; got:\n%s", out)
 	}
@@ -559,14 +551,14 @@ func TestLogging_unknownError(t *testing.T) {
 	defer healthSrv.Close()
 	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
 	defer codesSrv.Close()
-	redeemSrv := echoRedeemServer("error", "Internal server error.")
+	redeemSrv := jsonRedeemServer("error", "Internal server error.")
 	defer redeemSrv.Close()
 
 	cfg := config.Config{
 		PlayerFile:   playerFile(t, []string{"p1"}),
 		SkippingFile: skippingFile(t, nil),
 		HealthURL:    healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: redeemSrv.URL,
-		BatchSize: 1, Workers: 1,
+		Workers: 1, SessionToken: "token",
 	}
 	tick(context.Background(), cfg, newMockStore())
 	out := buf.String()
@@ -587,30 +579,28 @@ func TestLogging_mixedFailures(t *testing.T) {
 	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
 	defer codesSrv.Close()
 
-	// Each request gets a different result based on call order.
 	var mu sync.Mutex
 	responses := []map[string]any{
 		{"status": "error", "message": "Gift code expired."},
 		{"status": "error", "message": "Gift code already redeemed."},
-		{"status": "success", "message": "OK"},
+		{"status": "success", "message": "Gift code redeemed successfully."},
 	}
 	idx := 0
 	mixedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ AccountIDs []string `json:"accountIds"` }
-		json.NewDecoder(r.Body).Decode(&body)
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, id := range body.AccountIDs {
-			mu.Lock()
-			res := responses[idx%len(responses)]
-			idx++
-			mu.Unlock()
-			entry := map[string]any{"accountId": id, "status": res["status"], "message": res["message"]}
-			if res["status"] == "success" {
-				entry["playerInfo"] = map[string]any{"nickname": id, "kingdom": 1}
-			}
-			data, _ := json.Marshal(entry)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+		mu.Lock()
+		res := responses[idx%len(responses)]
+		idx++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		var data any
+		if res["status"] == "success" {
+			data = map[string]any{"redemption": "SUCCESS"}
 		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  res["status"],
+			"data":    data,
+			"message": res["message"],
+		})
 	}))
 	defer mixedSrv.Close()
 
@@ -618,7 +608,7 @@ func TestLogging_mixedFailures(t *testing.T) {
 		PlayerFile:   playerFile(t, []string{"p1", "p2", "p3"}),
 		SkippingFile: skippingFile(t, nil),
 		HealthURL:    healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: mixedSrv.URL,
-		BatchSize: 1, Workers: 1, // sequential so response order is deterministic
+		Workers: 1, SessionToken: "token", // sequential so response order is deterministic
 	}
 	tick(context.Background(), cfg, newMockStore())
 	out := buf.String()
@@ -653,19 +643,13 @@ func TestFailureSuffix(t *testing.T) {
 	}
 }
 
-func TestProcessSummary(t *testing.T) {
+func TestProcessResult(t *testing.T) {
 	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	t.Run("success saves with player info", func(t *testing.T) {
+	t.Run("success saves", func(t *testing.T) {
 		s := newMockStore()
-		summary := &redeemer.Summary{
-			Timestamp: ts,
-			Results: []redeemer.Result{
-				{AccountID: "p1", Status: "success", Message: "OK",
-					PlayerInfo: &redeemer.PlayerInfo{Nickname: "Hero", Kingdom: 7}},
-			},
-		}
-		succ, exp, ar, unk := processSummary(s, "CODE1", summary)
+		result := &redeemer.Result{PlayerID: "p1", Status: "success", Message: "ok"}
+		succ, exp, ar, unk := processResult(s, "CODE1", result, ts)
 		if succ != 1 || exp != 0 || ar != 0 || unk != 0 {
 			t.Errorf("counts: got %d/%d/%d/%d, want 1/0/0/0", succ, exp, ar, unk)
 		}
@@ -673,20 +657,15 @@ func TestProcessSummary(t *testing.T) {
 			t.Fatalf("want 1 saved, got %d", len(s.saved))
 		}
 		r := s.saved[0]
-		if r.Status != store.StatusSuccess || r.Nickname != "Hero" || r.Kingdom != 7 {
+		if r.Status != store.StatusSuccess || r.PlayerID != "p1" || r.Code != "CODE1" {
 			t.Errorf("saved: %+v", r)
 		}
 	})
 
 	t.Run("expired saved and counted", func(t *testing.T) {
 		s := newMockStore()
-		summary := &redeemer.Summary{
-			Timestamp: ts,
-			Results: []redeemer.Result{
-				{AccountID: "p1", Status: "error", Message: "Gift code expired."},
-			},
-		}
-		succ, exp, ar, unk := processSummary(s, "CODE1", summary)
+		result := &redeemer.Result{PlayerID: "p1", Status: "error", Message: "Gift code expired."}
+		succ, exp, ar, unk := processResult(s, "CODE1", result, ts)
 		if succ != 0 || exp != 1 || ar != 0 || unk != 0 {
 			t.Errorf("counts: got %d/%d/%d/%d, want 0/1/0/0", succ, exp, ar, unk)
 		}
@@ -697,13 +676,8 @@ func TestProcessSummary(t *testing.T) {
 
 	t.Run("already redeemed saved and counted", func(t *testing.T) {
 		s := newMockStore()
-		summary := &redeemer.Summary{
-			Timestamp: ts,
-			Results: []redeemer.Result{
-				{AccountID: "p1", Status: "error", Message: "Gift code already redeemed."},
-			},
-		}
-		succ, exp, ar, unk := processSummary(s, "CODE1", summary)
+		result := &redeemer.Result{PlayerID: "p1", Status: "error", Message: "Gift code already redeemed."}
+		succ, exp, ar, unk := processResult(s, "CODE1", result, ts)
 		if succ != 0 || exp != 0 || ar != 1 || unk != 0 {
 			t.Errorf("counts: got %d/%d/%d/%d, want 0/0/1/0", succ, exp, ar, unk)
 		}
@@ -714,13 +688,8 @@ func TestProcessSummary(t *testing.T) {
 
 	t.Run("unknown error not saved", func(t *testing.T) {
 		s := newMockStore()
-		summary := &redeemer.Summary{
-			Timestamp: ts,
-			Results: []redeemer.Result{
-				{AccountID: "p1", Status: "error", Message: "Internal server error."},
-			},
-		}
-		succ, exp, ar, unk := processSummary(s, "CODE1", summary)
+		result := &redeemer.Result{PlayerID: "p1", Status: "error", Message: "Internal server error."}
+		succ, exp, ar, unk := processResult(s, "CODE1", result, ts)
 		if succ != 0 || exp != 0 || ar != 0 || unk != 1 {
 			t.Errorf("counts: got %d/%d/%d/%d, want 0/0/0/1", succ, exp, ar, unk)
 		}
@@ -731,19 +700,22 @@ func TestProcessSummary(t *testing.T) {
 
 	t.Run("mixed results", func(t *testing.T) {
 		s := newMockStore()
-		summary := &redeemer.Summary{
-			Timestamp: ts,
-			Results: []redeemer.Result{
-				{AccountID: "p1", Status: "success", Message: "OK",
-					PlayerInfo: &redeemer.PlayerInfo{Nickname: "A", Kingdom: 1}},
-				{AccountID: "p2", Status: "error", Message: "Gift code expired."},
-				{AccountID: "p3", Status: "error", Message: "Gift code already redeemed."},
-				{AccountID: "p4", Status: "error", Message: "Unexpected."},
-			},
+		results := []*redeemer.Result{
+			{PlayerID: "p1", Status: "success", Message: "ok"},
+			{PlayerID: "p2", Status: "error", Message: "Gift code expired."},
+			{PlayerID: "p3", Status: "error", Message: "Gift code already redeemed."},
+			{PlayerID: "p4", Status: "error", Message: "Unexpected."},
 		}
-		succ, exp, ar, unk := processSummary(s, "CODE1", summary)
-		if succ != 1 || exp != 1 || ar != 1 || unk != 1 {
-			t.Errorf("counts: got %d/%d/%d/%d, want 1/1/1/1", succ, exp, ar, unk)
+		var totalSucc, totalExp, totalAr, totalUnk int
+		for _, r := range results {
+			succ, exp, ar, unk := processResult(s, "CODE1", r, ts)
+			totalSucc += succ
+			totalExp += exp
+			totalAr += ar
+			totalUnk += unk
+		}
+		if totalSucc != 1 || totalExp != 1 || totalAr != 1 || totalUnk != 1 {
+			t.Errorf("counts: got %d/%d/%d/%d, want 1/1/1/1", totalSucc, totalExp, totalAr, totalUnk)
 		}
 		if len(s.saved) != 3 { // success + expired + already_redeemed; unknown not saved
 			t.Errorf("want 3 saved, got %d: %+v", len(s.saved), s.saved)
@@ -774,7 +746,7 @@ func TestTick_skipsCode(t *testing.T) {
 	})
 	defer codesSrv.Close()
 
-	redeemSrv := echoRedeemServer("success", "OK")
+	redeemSrv := jsonRedeemServer("success", "ok")
 	defer redeemSrv.Close()
 
 	s := newMockStore()
@@ -785,8 +757,8 @@ func TestTick_skipsCode(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
 		Workers:      1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, s)
@@ -808,7 +780,7 @@ func TestTick_skipsCodeLogged(t *testing.T) {
 		{"id": 1, "code": "SKIP_ME", "createdAt": "2025-01-01"},
 	})
 	defer codesSrv.Close()
-	redeemSrv := redeemServer(nil) // must not be called
+	redeemSrv := jsonRedeemServer("success", "ok") // must not be called
 	defer redeemSrv.Close()
 
 	cfg := config.Config{
@@ -818,8 +790,8 @@ func TestTick_skipsCodeLogged(t *testing.T) {
 		HealthURL:    healthSrv.URL,
 		CodesURL:     codesSrv.URL,
 		RedeemURL:    redeemSrv.URL,
-		BatchSize:    1,
 		Workers:      1,
+		SessionToken: "token",
 	}
 
 	tick(context.Background(), cfg, newMockStore())

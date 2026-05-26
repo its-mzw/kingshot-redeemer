@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultCodesURL  = "https://kingshot.net/api/gift-codes"
-	defaultRedeemURL = "https://kingshot.net/api/gift-codes/bulk-redeem"
+	defaultRedeemURL = "https://kingshot.net/api/gift-codes/redeem"
 	defaultHealthURL = "https://kingshot.net/api/health"
 	defaultInterval  = 15 * time.Minute
 	defaultBatchSize = 3
@@ -39,6 +39,7 @@ type Config struct {
 	DBPath       string
 	BatchSize    int
 	Workers      int
+	SessionToken string
 }
 
 func Load() Config {
@@ -95,6 +96,8 @@ func Load() Config {
 		skippingFile = v
 	}
 
+	sessionToken := os.Getenv("SESSION_TOKEN")
+
 	return Config{
 		PlayerFile:   playerFile,
 		SkippingFile: skippingFile,
@@ -105,6 +108,7 @@ func Load() Config {
 		DBPath:       dbPath,
 		BatchSize:    batchSize,
 		Workers:      workers,
+		SessionToken: sessionToken,
 	}
 }
 
