@@ -544,6 +544,39 @@ func TestLogging_expiredCode(t *testing.T) {
 	}
 }
 
+func TestLogging_redeemError_includesJobNumber(t *testing.T) {
+	buf := captureLog(t)
+
+	healthSrv := healthServer()
+	defer healthSrv.Close()
+	codesSrv := codesServer([]map[string]any{{"id": 1, "code": "CODE1", "createdAt": "2025-01-01"}})
+	defer codesSrv.Close()
+
+	errorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer errorSrv.Close()
+
+	cfg := config.Config{
+		PlayerFile:   playerFile(t, []string{"p1", "p2", "p3"}),
+		SkippingFile: skippingFile(t, nil),
+		HealthURL:    healthSrv.URL, CodesURL: codesSrv.URL, RedeemURL: errorSrv.URL,
+		Workers: 1, SessionToken: "token",
+	}
+	tick(context.Background(), cfg, newMockStore())
+	out := buf.String()
+
+	if countLines(out, "[1/3]") != 1 {
+		t.Errorf("want job [1/3] in error log; got:\n%s", out)
+	}
+	if countLines(out, "[2/3]") != 1 {
+		t.Errorf("want job [2/3] in error log; got:\n%s", out)
+	}
+	if countLines(out, "[3/3]") != 1 {
+		t.Errorf("want job [3/3] in error log; got:\n%s", out)
+	}
+}
+
 func TestLogging_unknownError(t *testing.T) {
 	buf := captureLog(t)
 

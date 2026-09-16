@@ -102,12 +102,12 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 				defer wg.Done()
 				defer func() { <-sem }()
 
-				dispatched.Add(1)
+				n := dispatched.Add(1)
 				ts := time.Now().UTC()
 
 				result, err := redeemer.Redeem(ctx, code.Code, playerID, cfg.RedeemURL, cfg.SessionToken)
 				if err != nil {
-					log.Printf("scheduler: redeem player=%s %q: %v", playerID, code.Code, err)
+					log.Printf("scheduler: redeem [%d/%d] player=%s %q: %v", n, total, playerID, code.Code, err)
 					return
 				}
 
@@ -118,8 +118,6 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 				res.alreadyRedeemed += ar
 				res.unknown += unk
 				res.Unlock()
-
-				_ = total - dispatched.Load() // suppress unused warning
 			}()
 		}
 		wg.Wait()
