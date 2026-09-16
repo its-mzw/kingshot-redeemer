@@ -9,7 +9,12 @@ import (
 
 func TestLoad_defaults(t *testing.T) {
 	os.Clearenv()
-	cfg := Load()
+	os.Setenv("SESSION_TOKEN", "abc123")
+	t.Cleanup(os.Clearenv)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if cfg.PollInterval != defaultInterval {
 		t.Errorf("interval: got %v, want %v", cfg.PollInterval, defaultInterval)
@@ -38,9 +43,13 @@ func TestLoad_envOverride(t *testing.T) {
 	os.Setenv("DB_PATH", "/tmp/test.db")
 	os.Setenv("PLAYER_FILE", "/tmp/players.txt")
 	os.Setenv("SKIPPING_FILE", "/tmp/skipping_codes.txt")
+	os.Setenv("SESSION_TOKEN", "abc123")
 	t.Cleanup(os.Clearenv)
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if cfg.PollInterval != 10*time.Minute {
 		t.Errorf("interval: got %v, want 10m", cfg.PollInterval)
@@ -64,7 +73,12 @@ func TestLoad_envOverride(t *testing.T) {
 
 func TestLoad_workersDefault(t *testing.T) {
 	os.Clearenv()
-	cfg := Load()
+	os.Setenv("SESSION_TOKEN", "abc123")
+	t.Cleanup(os.Clearenv)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if cfg.Workers != defaultWorkers {
 		t.Errorf("workers default: got %d, want %d", cfg.Workers, defaultWorkers)
 	}
@@ -72,27 +86,35 @@ func TestLoad_workersDefault(t *testing.T) {
 
 func TestLoad_workersEnvOverride(t *testing.T) {
 	os.Setenv("WORKERS", "10")
+	os.Setenv("SESSION_TOKEN", "abc123")
 	t.Cleanup(os.Clearenv)
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if cfg.Workers != 10 {
 		t.Errorf("workers: got %d, want 10", cfg.Workers)
-	}
-}
-
-func TestLoad_sessionTokenDefault(t *testing.T) {
-	os.Clearenv()
-	cfg := Load()
-	if cfg.SessionToken != "" {
-		t.Errorf("session token default: got %q, want empty", cfg.SessionToken)
 	}
 }
 
 func TestLoad_sessionTokenEnvOverride(t *testing.T) {
 	os.Setenv("SESSION_TOKEN", "abc123")
 	t.Cleanup(os.Clearenv)
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if cfg.SessionToken != "abc123" {
 		t.Errorf("session token: got %q, want %q", cfg.SessionToken, "abc123")
+	}
+}
+
+func TestLoad_missingSessionTokenErrors(t *testing.T) {
+	os.Clearenv()
+	t.Cleanup(os.Clearenv)
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when SESSION_TOKEN is unset, got nil")
 	}
 }
 

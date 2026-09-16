@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type Result struct {
 	PlayerID string `json:"playerId"`
@@ -39,7 +42,7 @@ func Redeem(ctx context.Context, code, playerID, redeemURL, sessionToken string)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "__Secure-next-auth.session-token="+sessionToken)
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -47,10 +50,13 @@ func Redeem(ctx context.Context, code, playerID, redeemURL, sessionToken string)
 
 	if res.StatusCode != http.StatusOK {
 		var errResp redeemResponse
-		json.NewDecoder(res.Body).Decode(&errResp)
+		decodeErr := json.NewDecoder(res.Body).Decode(&errResp)
 		msg := errResp.Message
 		if msg == "" {
 			msg = fmt.Sprintf("unexpected status: %d", res.StatusCode)
+			if decodeErr != nil {
+				msg = fmt.Sprintf("%s (failed to parse error body: %v)", msg, decodeErr)
+			}
 		}
 		return nil, fmt.Errorf("redeem failed: %s", msg)
 	}

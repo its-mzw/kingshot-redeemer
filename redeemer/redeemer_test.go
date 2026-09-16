@@ -109,6 +109,25 @@ func TestRedeem_405_returnsError(t *testing.T) {
 	}
 }
 
+func TestRedeem_nonJSONErrorBody_includesDecodeFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("<html>502 Bad Gateway</html>"))
+	}))
+	defer srv.Close()
+
+	_, err := Redeem(context.Background(), "CODE", "p1", srv.URL, "token")
+	if err == nil {
+		t.Fatal("expected error for non-JSON error body")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error should mention status code 502: %v", err)
+	}
+	if !strings.Contains(err.Error(), "parse error body") {
+		t.Errorf("error should mention decode failure, got: %v", err)
+	}
+}
+
 func TestRedeem_contextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

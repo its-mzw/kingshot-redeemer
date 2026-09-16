@@ -12,7 +12,10 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
 
 	log.Printf("starting redeemer (interval=%s, workers=%d, db=%s, players=%s, skipping=%s)", cfg.PollInterval, cfg.Workers, cfg.DBPath, cfg.PlayerFile, cfg.SkippingFile)
 

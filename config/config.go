@@ -14,8 +14,6 @@ const (
 	defaultRedeemURL = "https://kingshot.net/api/gift-codes/redeem"
 	defaultHealthURL = "https://kingshot.net/api/health"
 	defaultInterval  = 15 * time.Minute
-	defaultBatchSize = 3
-	maxBatchSize     = 100
 	defaultWorkers   = 5
 	maxWorkers       = 20
 )
@@ -37,12 +35,11 @@ type Config struct {
 	RedeemURL    string
 	HealthURL    string
 	DBPath       string
-	BatchSize    int
 	Workers      int
 	SessionToken string
 }
 
-func Load() Config {
+func Load() (Config, error) {
 	interval := defaultInterval
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -63,13 +60,6 @@ func Load() Config {
 	healthURL := defaultHealthURL
 	if v := os.Getenv("HEALTH_URL"); v != "" {
 		healthURL = v
-	}
-
-	batchSize := defaultBatchSize
-	if v := os.Getenv("BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxBatchSize {
-			batchSize = n
-		}
 	}
 
 	workers := defaultWorkers
@@ -97,6 +87,9 @@ func Load() Config {
 	}
 
 	sessionToken := os.Getenv("SESSION_TOKEN")
+	if sessionToken == "" {
+		return Config{}, fmt.Errorf("SESSION_TOKEN environment variable is required")
+	}
 
 	return Config{
 		PlayerFile:   playerFile,
@@ -106,10 +99,9 @@ func Load() Config {
 		RedeemURL:    redeemURL,
 		HealthURL:    healthURL,
 		DBPath:       dbPath,
-		BatchSize:    batchSize,
 		Workers:      workers,
 		SessionToken: sessionToken,
-	}
+	}, nil
 }
 
 // LoadPlayerIDs reads player IDs from a plain text file, one ID per line.
