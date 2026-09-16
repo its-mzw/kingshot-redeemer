@@ -95,7 +95,6 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 		total := int64(len(remaining))
 
 		for _, playerID := range remaining {
-			playerID := playerID
 			wg.Add(1)
 			sem <- struct{}{}
 			go func() {
@@ -129,16 +128,9 @@ func tick(ctx context.Context, cfg config.Config, s store.Store) {
 }
 
 func processResult(s store.Store, code string, result *redeemer.Result, ts time.Time) (succeeded, expired, alreadyRedeemed, unknown int) {
-	if result.Status == "success" {
+	if result.Status == store.StatusSuccess {
 		succeeded++
-		if err := s.SaveRedemption(store.Redemption{
-			PlayerID:   result.PlayerID,
-			Code:       code,
-			RedeemedAt: ts,
-			Status:     store.StatusSuccess,
-		}); err != nil {
-			log.Printf("scheduler: save redemption player=%s code=%q: %v", result.PlayerID, code, err)
-		}
+		saveResult(s, code, result.PlayerID, ts, store.StatusSuccess)
 		return
 	}
 
@@ -156,16 +148,20 @@ func processResult(s store.Store, code string, result *redeemer.Result, ts time.
 		log.Printf("scheduler: player %s %q: %s", result.PlayerID, code, result.Message)
 	}
 	if status != "" {
-		if err := s.SaveRedemption(store.Redemption{
-			PlayerID:   result.PlayerID,
-			Code:       code,
-			RedeemedAt: ts,
-			Status:     status,
-		}); err != nil {
-			log.Printf("scheduler: save player=%s code=%q: %v", result.PlayerID, code, err)
-		}
+		saveResult(s, code, result.PlayerID, ts, status)
 	}
 	return
+}
+
+func saveResult(s store.Store, code, playerID string, ts time.Time, status string) {
+	if err := s.SaveRedemption(store.Redemption{
+		PlayerID:   playerID,
+		Code:       code,
+		RedeemedAt: ts,
+		Status:     status,
+	}); err != nil {
+		log.Printf("scheduler: save player=%s code=%q: %v", playerID, code, err)
+	}
 }
 
 func failureSuffix(expired, alreadyRedeemed, unknown int) string {

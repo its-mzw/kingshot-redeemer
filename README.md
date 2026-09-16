@@ -46,11 +46,11 @@ All configuration is via environment variables. Set them in `docker-compose.yml`
 
 | Variable        | Default                                      | Description                                                     |
 | --------------- | -------------------------------------------- | --------------------------------------------------------------- |
-| `SESSION_TOKEN` | *(required)*                                 | Value of `__Secure-next-auth.session-token` cookie from browser |
+| `SESSION_TOKEN` | _(required)_                                 | Value of `__Secure-next-auth.session-token` cookie from browser |
 | `PLAYER_FILE`   | `./players.txt`                              | Path to player IDs file (one ID per line)                       |
 | `SKIPPING_FILE` | `./skipping_codes.txt`                       | Path to codes to skip (one code per line)                       |
 | `DB_PATH`       | `./redeemer.db`                              | SQLite database path (auto-created)                             |
-| `POLL_INTERVAL` | `15m`                                        | Poll interval, e.g. `30s`, `10m`, `1h`                         |
+| `POLL_INTERVAL` | `15m`                                        | Poll interval, e.g. `30s`, `10m`, `1h`                          |
 | `WORKERS`       | `5`                                          | Concurrent redeem requests per code (max 20)                    |
 | `CODES_URL`     | `https://kingshot.net/api/gift-codes`        | Gift codes API endpoint                                         |
 | `REDEEM_URL`    | `https://kingshot.net/api/gift-codes/redeem` | Redeem API endpoint                                             |

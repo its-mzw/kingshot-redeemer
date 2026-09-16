@@ -80,11 +80,11 @@ func migrate(db *sql.DB) error {
 		if version >= migrationVersion {
 			continue
 		}
-		sql, err := migrations.ReadFile("migrations/" + entry.Name())
+		data, err := migrations.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
-		if _, err := db.Exec(string(sql)); err != nil {
+		if _, err := db.Exec(string(data)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
 	}
